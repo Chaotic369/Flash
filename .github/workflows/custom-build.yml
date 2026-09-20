@@ -1,0 +1,84 @@
+name: Build APK (FlashPro Native)
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_name:
+        description: "App display name"
+        required: false
+        default: "FlashPro"
+      app_version:
+        description: "App version"
+        required: false
+        default: "1.0.0"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      APP_NAME: ${{ github.event.inputs.app_name }}
+      APP_VERSION: ${{ github.event.inputs.app_version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Apply app name and version
+        shell: bash
+        run: |
+          set -e
+          NAME="${APP_NAME:-FlashPro}"
+          VER="$(printf '%s' "${APP_VERSION:-1.0.0}" | tr -cd '0-9A-Za-z._-')"
+          [ -z "$VER" ] && VER="1.0.0"
+          CODE="$(date +%s)"
+          XML_NAME="$(printf '%s' "$NAME" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g')"
+          python3 - "$XML_NAME" "$VER" "$CODE" << 'PYEOF'
+          import re, sys
+          name, ver, code = sys.argv[1], sys.argv[2], sys.argv[3]
+          p = "app/src/main/AndroidManifest.xml"
+          s = open(p, encoding="utf-8").read()
+          s = re.sub(r'android:label="[^"]*"', lambda m: 'android:label="' + name + '"', s, count=1)
+          open(p, "w", encoding="utf-8").write(s)
+          g = "app/build.gradle.kts"
+          t = open(g, encoding="utf-8").read()
+          t = re.sub(r'versionName = "[^"]*"', lambda m: 'versionName = "' + ver + '"', t, count=1)
+          t = re.sub(r'versionCode = \d+', lambda m: 'versionCode = ' + code, t, count=1)
+          open(g, "w", encoding="utf-8").write(t)
+          PYEOF
+
+      - name: Apply custom icon (optional)
+        shell: bash
+        run: |
+          if [ -f build-icon.png ]; then
+            echo "Custom icon found, applying."
+            for d in mipmap-mdpi mipmap-hdpi mipmap-xhdpi mipmap-xxhdpi mipmap-xxxhdpi; do
+              mkdir -p "app/src/main/res/$d"
+              cp build-icon.png "app/src/main/res/$d/ic_launcher.png"
+              cp build-icon.png "app/src/main/res/$d/ic_launcher_round.png"
+            done
+            if ! grep -q 'android:icon=' app/src/main/AndroidManifest.xml; then
+              sed -i 's|<application|<application android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher_round"|' app/src/main/AndroidManifest.xml
+            fi
+          else
+            echo "No build-icon.png found, using default icon."
+          fi
+
+      - name: Build debug APK
+        run: gradle assembleDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Android-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
